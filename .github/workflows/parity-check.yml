@@ -1,0 +1,31 @@
+# Comparador de paridad — corre diario al cierre (11:30pm MX = 5:30am UTC)
+# y guarda el resultado en parity_reports (lo lee el dashboard/chat del POS).
+# Si hay divergencia el job falla → visible en GitHub + queryable en Supabase.
+name: parity-check
+
+on:
+  schedule:
+    - cron: '30 5 * * *' # 11:30pm MX (UTC-6)
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'Día a comparar (YYYY-MM-DD, default: hoy MX)'
+        required: false
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g pnpm && pnpm install --frozen-lockfile
+      - name: Comparar paridad
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          DAY="${{ github.event.inputs.day }}"
+          if [ -z "$DAY" ]; then DAY=$(TZ=America/Monterrey date +%F); fi
+          npm run parity "$DAY"

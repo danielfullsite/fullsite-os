@@ -104,4 +104,29 @@ if (report.unauditedCancellations > 0) {
 }
 
 console.log(report.ok ? '\n  ✅ PARIDAD OK — los eventos cuentan la misma historia que el legado.\n' : '\n  ❌ DIVERGENCIA — revisar antes de avanzar de fase.\n');
+
+// Persistir el resultado en parity_reports (lo lee el dashboard/chat del POS).
+// --no-save para corridas locales exploratorias.
+if (!process.argv.includes('--no-save')) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/parity_reports`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify({
+      day,
+      legacy_ops: report.legacyOps,
+      event_ops: report.eventOps,
+      matched: report.matched,
+      diffs: report.diffs,
+      unaudited_cancellations: report.unauditedCancellations,
+      ok: report.ok,
+    }),
+  });
+  console.log(res.ok ? '  reporte guardado en parity_reports' : `  ⚠️ no se pudo guardar el reporte: HTTP ${res.status} ${await res.text()}`);
+}
+
 process.exit(report.ok ? 0 : 1);
