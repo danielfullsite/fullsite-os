@@ -137,6 +137,86 @@ describe('comparador de paridad', () => {
     expect(r.ok).toBe(false);
   });
 
+  it('pago: matchea por ticket + método + total', () => {
+    const legacy: LegacyAction[] = [
+      {
+        order_id: 't5',
+        action: 'payment_processed',
+        actor: 'mesero-1',
+        details: { method: 'Efectivo', total: 350 },
+      },
+    ];
+    const events: Envelope[] = [
+      {
+        id: crypto.randomUUID(),
+        type: 'payments.payment.captured.v1',
+        version: 1,
+        occurredAt: new Date().toISOString(),
+        actor: { userId: 'mesero-1', deviceId: 'POS-TEST' },
+        payload: { ticketId: 't5', metodo: 'Efectivo', total: 350, clientId: 'amalay' },
+      },
+    ];
+    const r = compareParity(legacy, events);
+    expect(r.ok).toBe(true);
+    expect(r.matched).toBe(1);
+  });
+
+  it('pago con total distinto diverge', () => {
+    const legacy: LegacyAction[] = [
+      {
+        order_id: 't5',
+        action: 'payment_processed',
+        actor: 'mesero-1',
+        details: { method: 'Efectivo', total: 350 },
+      },
+    ];
+    const events: Envelope[] = [
+      {
+        id: crypto.randomUUID(),
+        type: 'payments.payment.captured.v1',
+        version: 1,
+        occurredAt: new Date().toISOString(),
+        actor: { userId: 'mesero-1', deviceId: 'POS-TEST' },
+        payload: { ticketId: 't5', metodo: 'Efectivo', total: 340, clientId: 'amalay' },
+      },
+    ];
+    const r = compareParity(legacy, events);
+    expect(r.ok).toBe(false);
+    expect(r.diffs).toHaveLength(2);
+  });
+
+  it('descuento: matchea por ticket + monto, sin approvedBy en la llave', () => {
+    const legacy: LegacyAction[] = [
+      {
+        order_id: 't6',
+        action: 'discount_applied',
+        actor: 'mesero-1',
+        details: { amount: 50, subtotal: 500 } as LegacyAction['details'],
+      },
+    ];
+    const events: Envelope[] = [
+      {
+        id: crypto.randomUUID(),
+        type: 'orders.discount.applied.v1',
+        version: 1,
+        occurredAt: new Date().toISOString(),
+        actor: { userId: 'mesero-1', deviceId: 'POS-TEST' },
+        payload: { ticketId: 't6', amount: 50, clientId: 'amalay' },
+        audit: {
+          requestedBy: 'mesero-1',
+          approvedBy: 'mesero-1',
+          reason: 'cliente frecuente',
+          before: { subtotal: 500, descuento: 0 },
+          after: { subtotal: 450, descuento: 50 },
+        },
+      },
+    ];
+    const r = compareParity(legacy, events);
+    expect(r.ok).toBe(true);
+    expect(r.matched).toBe(1);
+    expect(r.unauditedCancellations).toBe(0);
+  });
+
   it('acciones legadas sin contraparte shadow (item_modified) se ignoran', () => {
     const legacy: LegacyAction[] = [
       { order_id: 't1', action: 'item_modified', actor: 'mesero-1', details: { item: 'LATTE' } },

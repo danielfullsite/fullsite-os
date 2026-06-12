@@ -53,12 +53,12 @@ const [legacy, eventRows] = await Promise.all([
   fetchAll<LegacyAction>(
     `pos_audit_log?select=order_id,action,actor,reason,approved_by,details` +
       `&created_at=gte.${from}&created_at=lte.${to}` +
-      `&action=in.(item_added,item_cancelled,order_cancelled)&order=created_at.asc`,
+      `&action=in.(item_added,item_cancelled,order_cancelled,payment_processed,discount_applied)&order=created_at.asc`,
   ),
   fetchAll<EventRow>(
     `events?select=id,type,version,occurred_at,actor,payload,audit` +
       `&occurred_at=gte.${from}&occurred_at=lte.${to}` +
-      `&type=in.(orders.item.added.v1,orders.item.cancelled.v1)&order=sequence.asc`,
+      `&type=in.(orders.item.added.v1,orders.item.cancelled.v1,payments.payment.captured.v1,orders.discount.applied.v1)&order=sequence.asc`,
   ),
 ]);
 

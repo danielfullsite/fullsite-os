@@ -9,10 +9,15 @@
 //   item_added                → orders.item.added.v1
 //   item_cancelled            → orders.item.cancelled.v1 (sin voidOrder)
 //   order_cancelled (N items) → N × orders.item.cancelled.v1 (voidOrder=true)
+//   payment_processed         → payments.payment.captured.v1
+//   discount_applied          → orders.discount.applied.v1
 //
 // Match por multiconjunto dentro de cada ticket: ticket + producto + qty
-// (+ approvedBy en cancelaciones). No por timestamp: la cola offline del
-// POS puede entregar eventos con minutos de retraso y eso NO es divergencia.
+// (+ approvedBy en cancelaciones). Pagos: ticket + método + total.
+// Descuentos: ticket + monto (el legado no guarda approved_by para
+// descuentos hoy, así que no entra en la clave). No por timestamp: la cola
+// offline del POS puede entregar eventos con minutos de retraso y eso NO
+// es divergencia.
 
 import type { Envelope } from '../../src/shared/events/envelope.js';
 
@@ -28,12 +33,19 @@ export interface LegacyAction {
     cantidad?: number;
     precio?: number;
     items?: { nombre: string; cantidad: number; subtotal: number }[];
+    // payment_processed
+    method?: string;
+    total?: number;
+    // discount_applied
+    amount?: number;
   } | null;
 }
 
 // Operación normalizada: la moneda común de ambos streams.
+// Para 'payment': producto = método de pago, qty = total cobrado.
+// Para 'discount': producto = '', qty = monto del descuento.
 interface Op {
-  kind: 'added' | 'cancelled';
+  kind: 'added' | 'cancelled' | 'payment' | 'discount';
   ticketId: string;
   producto: string;
   qty: number;
@@ -59,10 +71,18 @@ export interface ParityReport {
 const opKey = (o: Op): string =>
   `${o.kind}|${o.ticketId}|${o.producto}|${o.qty}|${o.approvedBy ?? ''}`;
 
-const describe = (o: Op): string =>
-  o.kind === 'added'
-    ? `+ ${o.qty}x ${o.producto}`
-    : `✗ ${o.qty}x ${o.producto} (aprobó: ${o.approvedBy ?? 'NADIE'})`;
+const describe = (o: Op): string => {
+  switch (o.kind) {
+    case 'added':
+      return `+ ${o.qty}x ${o.producto}`;
+    case 'cancelled':
+      return `✗ ${o.qty}x ${o.producto} (aprobó: ${o.approvedBy ?? 'NADIE'})`;
+    case 'payment':
+      return `$ pago ${o.producto} por ${o.qty}`;
+    case 'discount':
+      return `% descuento de ${o.qty}`;
+  }
+};
 
 export function legacyToOps(rows: LegacyAction[]): Op[] {
   const ops: Op[] = [];
@@ -96,6 +116,22 @@ export function legacyToOps(rows: LegacyAction[]): Op[] {
           approvedBy: r.approved_by ?? null,
         });
       }
+    } else if (r.action === 'payment_processed' && r.details) {
+      ops.push({
+        kind: 'payment',
+        ticketId,
+        producto: r.details.method ?? '',
+        qty: r.details.total ?? 0,
+        approvedBy: null,
+      });
+    } else if (r.action === 'discount_applied' && r.details) {
+      ops.push({
+        kind: 'discount',
+        ticketId,
+        producto: '',
+        qty: r.details.amount ?? 0,
+        approvedBy: null,
+      });
     }
     // item_modified, order_created, etc.: aún sin evento shadow — fuera de alcance.
   }
@@ -121,6 +157,24 @@ export function eventsToOps(events: Envelope[]): Op[] {
         producto: String(p.productId ?? ''),
         qty: Number(p.qty ?? 1),
         approvedBy: e.audit?.approvedBy ?? null,
+      });
+    } else if (e.type === 'payments.payment.captured.v1') {
+      ops.push({
+        kind: 'payment',
+        ticketId: String(p.ticketId ?? ''),
+        producto: String(p.metodo ?? ''),
+        qty: Number(p.total ?? 0),
+        approvedBy: null,
+      });
+    } else if (e.type === 'orders.discount.applied.v1') {
+      // approvedBy NO entra en la clave: el legado no guarda approved_by
+      // para descuentos (hoy son auto-aprobados, sin PIN de gerente).
+      ops.push({
+        kind: 'discount',
+        ticketId: String(p.ticketId ?? ''),
+        producto: '',
+        qty: Number(p.amount ?? 0),
+        approvedBy: null,
       });
     }
   }
