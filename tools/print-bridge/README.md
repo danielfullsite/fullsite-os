@@ -30,8 +30,12 @@ Copia `printers.example.json` a `printers.json` junto al ejecutable:
 {
   "port": 7717,
   "stations": {
-    "cocina": { "type": "tcp", "host": "192.168.1.50", "port": 9100 },
-    "caja":   { "type": "windows", "printer": "POS-80" }
+    "cocina": [
+      { "type": "tcp", "host": "192.168.1.50", "port": 9100 },
+      { "type": "tcp", "host": "192.168.1.51", "port": 9100 }
+    ],
+    "barra": { "type": "tcp", "host": "192.168.1.52" },
+    "caja":  { "type": "tcp", "host": "192.168.1.53" }
   },
   "default": "caja"
 }
@@ -41,6 +45,9 @@ Copia `printers.example.json` a `printers.json` junto al ejecutable:
 - `windows` — impresora USB instalada en Windows; `printer` es el **nombre
   exacto de la cola** (`Get-Printer | Select Name` en PowerShell). Usa el
   driver del fabricante o "Generic / Text Only".
+- Una estación puede tener **varias impresoras** (arreglo): el ticket sale en
+  todas (ej. cocina de AMALAY con 2). Si al menos una imprime, el job es
+  exitoso; las que fallen se reportan en `errors` de la respuesta.
 
 ## Correr en desarrollo (Mac/Linux)
 

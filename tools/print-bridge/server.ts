@@ -87,8 +87,24 @@ function printWindows(printerName: string, bytes: Uint8Array): Promise<void> {
   });
 }
 
-function dispatch(printer: PrinterConfig, bytes: Uint8Array): Promise<void> {
+function dispatchOne(printer: PrinterConfig, bytes: Uint8Array): Promise<void> {
   return printer.type === 'tcp' ? printTcp(printer, bytes) : printWindows(printer.printer, bytes);
+}
+
+/**
+ * Imprime a TODAS las impresoras de la estación (ej. cocina con 2).
+ * Éxito si al menos una imprimió; las que fallen se reportan en `errors`.
+ */
+async function dispatch(printers: PrinterConfig[], bytes: Uint8Array): Promise<{ printed: number; errors: string[] }> {
+  const results = await Promise.allSettled(printers.map((p) => dispatchOne(p, bytes)));
+  const errors = results
+    .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+    .map((r) => (r.reason as Error).message);
+  const printed = results.length - errors.length;
+  if (printed === 0) {
+    throw new Error(errors.join(' | ') || 'ninguna impresora respondió');
+  }
+  return { printed, errors };
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────
@@ -178,9 +194,12 @@ const server = createServer(async (req, res) => {
         }
       }
 
-      await dispatch(resolved.printer, bytes);
-      console.log(`[${new Date().toISOString()}] ${url} → ${resolved.station} (${bytes.length} bytes) OK`);
-      json(res, 200, { ok: true, station: resolved.station, bytes: bytes.length });
+      const { printed, errors } = await dispatch(resolved.printers, bytes);
+      console.log(
+        `[${new Date().toISOString()}] ${url} → ${resolved.station} (${bytes.length} bytes, ${printed}/${resolved.printers.length} impresoras) OK` +
+        (errors.length ? ` — fallas: ${errors.join(' | ')}` : ''),
+      );
+      json(res, 200, { ok: true, station: resolved.station, bytes: bytes.length, printed, ...(errors.length ? { errors } : {}) });
       return;
     }
 

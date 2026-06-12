@@ -50,6 +50,33 @@ describe('print bridge — config', () => {
   it('rechaza stations vacío', () => {
     expect(() => parseConfig({ stations: {} })).toThrow(ConfigError);
   });
+
+  it('normaliza estación con una impresora a arreglo', () => {
+    const c = parseConfig({ stations: { caja: { type: 'windows', printer: 'X' } } });
+    expect(c.stations.caja).toHaveLength(1);
+  });
+
+  it('acepta estación con varias impresoras (cocina x2)', () => {
+    const c = parseConfig({
+      stations: {
+        cocina: [
+          { type: 'tcp', host: '192.168.1.50' },
+          { type: 'tcp', host: '192.168.1.51' },
+        ],
+      },
+    });
+    expect(c.stations.cocina).toHaveLength(2);
+  });
+
+  it('rechaza estación con arreglo vacío', () => {
+    expect(() => parseConfig({ stations: { cocina: [] } })).toThrow(ConfigError);
+  });
+
+  it('rechaza impresora inválida dentro del arreglo', () => {
+    expect(() =>
+      parseConfig({ stations: { cocina: [{ type: 'tcp', host: '1.1.1.1' }, { type: 'tcp' }] } }),
+    ).toThrow(ConfigError);
+  });
 });
 
 describe('print bridge — resolución de estación', () => {
@@ -62,7 +89,9 @@ describe('print bridge — resolución de estación', () => {
   });
 
   it('estación conocida → su impresora', () => {
-    expect(resolvePrinter(config, 'cocina')?.station).toBe('cocina');
+    const r = resolvePrinter(config, 'cocina');
+    expect(r?.station).toBe('cocina');
+    expect(r?.printers).toHaveLength(1);
   });
 
   it('estación desconocida → default', () => {
@@ -106,25 +135,37 @@ describe('print bridge — base64', () => {
 describe('print bridge — E2E con impresora TCP falsa', () => {
   const BRIDGE_PORT = 17717;
   const PRINTER_PORT = 19100;
+  const PRINTER2_PORT = 19101;
   let fakePrinter: NetServer;
+  let fakePrinter2: NetServer;
   let bridge: ChildProcess;
   const received: Buffer[] = [];
+  const received2: Buffer[] = [];
 
   beforeAll(async () => {
-    // Impresora falsa: captura todo lo que llega por TCP.
+    // Impresoras falsas: capturan todo lo que llega por TCP.
     fakePrinter = createNetServer((socket) => {
       socket.on('data', (chunk: Buffer) => received.push(chunk));
     });
     await new Promise<void>((r) => fakePrinter.listen(PRINTER_PORT, '127.0.0.1', r));
+    fakePrinter2 = createNetServer((socket) => {
+      socket.on('data', (chunk: Buffer) => received2.push(chunk));
+    });
+    await new Promise<void>((r) => fakePrinter2.listen(PRINTER2_PORT, '127.0.0.1', r));
 
-    // Config temporal apuntando a la impresora falsa.
+    // Config temporal: cocina con DOS impresoras (fan-out), default cocina.
     const dir = mkdtempSync(join(tmpdir(), 'bridge-test-'));
     const configPath = join(dir, 'printers.json');
     writeFileSync(
       configPath,
       JSON.stringify({
         port: BRIDGE_PORT,
-        stations: { cocina: { type: 'tcp', host: '127.0.0.1', port: PRINTER_PORT } },
+        stations: {
+          cocina: [
+            { type: 'tcp', host: '127.0.0.1', port: PRINTER_PORT },
+            { type: 'tcp', host: '127.0.0.1', port: PRINTER2_PORT },
+          ],
+        },
         default: 'cocina',
       }),
     );
@@ -150,6 +191,7 @@ describe('print bridge — E2E con impresora TCP falsa', () => {
   afterAll(async () => {
     bridge?.kill();
     await new Promise<void>((r) => fakePrinter.close(() => r()));
+    await new Promise<void>((r) => fakePrinter2.close(() => r()));
   });
 
   it('GET /health reporta estaciones', async () => {
@@ -170,8 +212,9 @@ describe('print bridge — E2E con impresora TCP falsa', () => {
     expect(res.headers.get('access-control-allow-private-network')).toBe('true');
   });
 
-  it('POST /print entrega los bytes exactos a la impresora', async () => {
+  it('POST /print entrega los bytes exactos a LAS DOS impresoras de cocina', async () => {
     received.length = 0;
+    received2.length = 0;
     const escpos = new Uint8Array([0x1b, 0x40, 0x54, 0x49, 0x43, 0x4b, 0x45, 0x54, 0x0a, 0x1d, 0x56, 0x42, 0x00]);
     const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/print`, {
       method: 'POST',
@@ -182,9 +225,11 @@ describe('print bridge — E2E con impresora TCP falsa', () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.bytes).toBe(escpos.length);
-    // Dar tiempo a que el socket entregue.
+    expect(body.printed).toBe(2);
+    // Dar tiempo a que los sockets entreguen.
     await new Promise((r) => setTimeout(r, 200));
     expect([...Buffer.concat(received)]).toEqual([...escpos]);
+    expect([...Buffer.concat(received2)]).toEqual([...escpos]);
   });
 
   it('POST /drawer manda el kick ESC/POS', async () => {
@@ -208,9 +253,27 @@ describe('print bridge — E2E con impresora TCP falsa', () => {
     expect(res.status).toBe(400);
   });
 
-  it('impresora caída → 502 con error', async () => {
-    // Apagar la impresora falsa temporalmente.
+  it('una impresora de la estación caída → 200 parcial con errores', async () => {
+    // Apagar solo la primera impresora de cocina.
     await new Promise<void>((r) => fakePrinter.close(() => r()));
+    received2.length = 0;
+    const payload = new Uint8Array([0x0a]);
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/print`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: Buffer.from(payload).toString('base64') }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.printed).toBe(1);
+    expect(body.errors).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 200));
+    expect([...Buffer.concat(received2)]).toEqual([...payload]);
+  });
+
+  it('TODAS las impresoras caídas → 502 con error', async () => {
+    await new Promise<void>((r) => fakePrinter2.close(() => r()));
     const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/print`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -219,8 +282,10 @@ describe('print bridge — E2E con impresora TCP falsa', () => {
     expect(res.status).toBe(502);
     const body = await res.json();
     expect(body.ok).toBe(false);
-    // Revivirla para afterAll.
+    // Revivirlas para afterAll.
     fakePrinter = createNetServer((socket) => socket.on('data', (c: Buffer) => received.push(c)));
     await new Promise<void>((r) => fakePrinter.listen(PRINTER_PORT, '127.0.0.1', r));
+    fakePrinter2 = createNetServer((socket) => socket.on('data', (c: Buffer) => received2.push(c)));
+    await new Promise<void>((r) => fakePrinter2.listen(PRINTER2_PORT, '127.0.0.1', r));
   });
 });

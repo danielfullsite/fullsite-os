@@ -22,7 +22,10 @@ export type PrinterConfig = TcpPrinter | WindowsPrinter;
 
 export interface BridgeConfig {
   port: number; // puerto HTTP del bridge (default 7717)
-  stations: Record<string, PrinterConfig>; // cocina / barra / caja / ...
+  // Cada estación puede tener 1+ impresoras (ej. cocina con 2: el ticket
+  // sale en todas). En printers.json se acepta objeto o arreglo; aquí ya
+  // viene normalizado a arreglo.
+  stations: Record<string, PrinterConfig[]>;
   default?: string; // estación a usar cuando no se especifica o no existe
 }
 
@@ -58,6 +61,16 @@ function validatePrinter(name: string, p: unknown): PrinterConfig {
   throw new ConfigError(`stations.${name}: "type" debe ser "tcp" o "windows"`);
 }
 
+function validateStation(name: string, p: unknown): PrinterConfig[] {
+  if (Array.isArray(p)) {
+    if (p.length === 0) {
+      throw new ConfigError(`stations.${name}: el arreglo de impresoras no puede estar vacío`);
+    }
+    return p.map((item, i) => validatePrinter(`${name}[${i}]`, item));
+  }
+  return [validatePrinter(name, p)];
+}
+
 /** Valida y normaliza printers.json. Lanza ConfigError con mensaje accionable. */
 export function parseConfig(raw: unknown): BridgeConfig {
   if (typeof raw !== 'object' || raw === null) {
@@ -71,9 +84,9 @@ export function parseConfig(raw: unknown): BridgeConfig {
   if (typeof o.stations !== 'object' || o.stations === null || Array.isArray(o.stations)) {
     throw new ConfigError('"stations" debe ser un objeto { nombre: impresora }');
   }
-  const stations: Record<string, PrinterConfig> = {};
+  const stations: Record<string, PrinterConfig[]> = {};
   for (const [name, p] of Object.entries(o.stations as Record<string, unknown>)) {
-    stations[name] = validatePrinter(name, p);
+    stations[name] = validateStation(name, p);
   }
   if (Object.keys(stations).length === 0) {
     throw new ConfigError('"stations" no puede estar vacío');
@@ -89,27 +102,27 @@ export function parseConfig(raw: unknown): BridgeConfig {
 }
 
 /**
- * Resuelve estación → impresora. Si la estación no existe (o no se manda),
+ * Resuelve estación → impresora(s). Si la estación no existe (o no se manda),
  * cae al default. Devuelve null si no hay forma de imprimir.
  */
 export function resolvePrinter(
   config: BridgeConfig,
   station?: string | null,
-): { station: string; printer: PrinterConfig } | null {
+): { station: string; printers: PrinterConfig[] } | null {
   const direct = station ? config.stations[station] : undefined;
   if (station && direct) {
-    return { station, printer: direct };
+    return { station, printers: direct };
   }
   const fallback = config.default ? config.stations[config.default] : undefined;
   if (config.default && fallback) {
-    return { station: config.default, printer: fallback };
+    return { station: config.default, printers: fallback };
   }
   // Sin default explícito: si solo hay una estación, úsala.
   const names = Object.keys(config.stations);
   const only = names.length === 1 ? names[0] : undefined;
-  const onlyPrinter = only ? config.stations[only] : undefined;
-  if (only && onlyPrinter) {
-    return { station: only, printer: onlyPrinter };
+  const onlyPrinters = only ? config.stations[only] : undefined;
+  if (only && onlyPrinters) {
+    return { station: only, printers: onlyPrinters };
   }
   return null;
 }

@@ -1,9 +1,12 @@
 {
   "port": 7717,
   "stations": {
-    "cocina": { "type": "tcp", "host": "192.168.1.50", "port": 9100 },
-    "barra": { "type": "windows", "printer": "POS-58" },
-    "caja": { "type": "windows", "printer": "POS-80" }
+    "cocina": [
+      { "type": "tcp", "host": "192.168.1.50", "port": 9100 },
+      { "type": "tcp", "host": "192.168.1.51", "port": 9100 }
+    ],
+    "barra": { "type": "tcp", "host": "192.168.1.52", "port": 9100 },
+    "caja": { "type": "tcp", "host": "192.168.1.53", "port": 9100 }
   },
   "default": "caja"
 }
