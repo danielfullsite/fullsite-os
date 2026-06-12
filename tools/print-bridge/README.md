@@ -34,12 +34,28 @@ Copia `printers.example.json` a `printers.json` junto al ejecutable:
       { "type": "tcp", "host": "192.168.1.50", "port": 9100 },
       { "type": "tcp", "host": "192.168.1.51", "port": 9100 }
     ],
-    "barra": { "type": "tcp", "host": "192.168.1.52" },
-    "caja":  { "type": "tcp", "host": "192.168.1.53" }
+    "barra":   { "type": "tcp", "host": "192.168.1.52" },
+    "caja":    { "type": "tcp", "host": "192.168.1.54" },
+    "tickets": { "type": "tcp", "host": "192.168.1.53" }
   },
-  "default": "caja"
+  "default": "tickets"
 }
 ```
+
+### Layout AMALAY — 5 impresoras físicas
+
+| Impresora física | Estación en `printers.json` | Imprime |
+|---|---|---|
+| Cocina 1 | `cocina` (fan-out) | Comandas de comida |
+| Cocina 2 | `cocina` (fan-out) | Comandas de comida (copia) |
+| Barra | `barra` | Comandas de bebidas |
+| Entrada | `caja` | Comandas Market (toast, bakery, mkt-*) — el POS rutea estas categorías a la estación `caja` |
+| Caja | `tickets` (default) | Tickets de cobro, precuentas, QR factura + **cajón RJ11** |
+
+Clave: el POS manda las comandas Market con `station: "caja"`, pero los
+tickets de cobro/precuentas/cajón van **sin** `station` → caen al `default`
+(`tickets`). Así la impresora de Entrada (Market) y la de Caja (cobro) son
+**físicamente distintas** sin cambiar código del POS ni del bridge.
 
 - `tcp` — impresora de red (Ethernet/WiFi), protocolo RAW puerto 9100.
 - `windows` — impresora USB instalada en Windows; `printer` es el **nombre

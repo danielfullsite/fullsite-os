@@ -6,7 +6,8 @@
       { "type": "tcp", "host": "192.168.1.51", "port": 9100 }
     ],
     "barra": { "type": "tcp", "host": "192.168.1.52", "port": 9100 },
-    "caja": { "type": "tcp", "host": "192.168.1.53", "port": 9100 }
+    "caja": { "type": "tcp", "host": "192.168.1.54", "port": 9100 },
+    "tickets": { "type": "tcp", "host": "192.168.1.53", "port": 9100 }
   },
-  "default": "caja"
+  "default": "tickets"
 }

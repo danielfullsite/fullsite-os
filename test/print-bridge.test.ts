@@ -116,6 +116,37 @@ describe('print bridge — resolución de estación', () => {
     const c = parseConfig({ stations: { caja: { type: 'windows', printer: 'X' } } });
     expect(resolvePrinter(c, null)?.station).toBe('caja');
   });
+
+  // Layout AMALAY: 5 impresoras físicas (Mónica 2026-06-12).
+  // Entrada (comandas Market, estación 'caja') y Caja (tickets de cobro,
+  // default 'tickets') deben resolver a impresoras DISTINTAS.
+  it('layout AMALAY 5 impresoras: Market (caja) ≠ tickets de cobro (default)', () => {
+    const c = parseConfig({
+      stations: {
+        cocina: [
+          { type: 'tcp', host: '192.168.1.50' },
+          { type: 'tcp', host: '192.168.1.51' },
+        ],
+        barra: { type: 'tcp', host: '192.168.1.52' },
+        caja: { type: 'tcp', host: '192.168.1.54' },
+        tickets: { type: 'tcp', host: '192.168.1.53' },
+      },
+      default: 'tickets',
+    });
+    // 5 impresoras físicas en total
+    const total = Object.values(c.stations).reduce((n, p) => n + p.length, 0);
+    expect(total).toBe(5);
+    // Comanda Market → impresora de Entrada
+    const market = resolvePrinter(c, 'caja');
+    expect(market?.station).toBe('caja');
+    expect(market?.printers[0]).toMatchObject({ host: '192.168.1.54' });
+    // Ticket de cobro / precuenta / cajón van SIN estación → default 'tickets'
+    const cobro = resolvePrinter(c, null);
+    expect(cobro?.station).toBe('tickets');
+    expect(cobro?.printers[0]).toMatchObject({ host: '192.168.1.53' });
+    // Comandas de cocina hacen fan-out a 2 impresoras
+    expect(resolvePrinter(c, 'cocina')?.printers).toHaveLength(2);
+  });
 });
 
 describe('print bridge — base64', () => {
