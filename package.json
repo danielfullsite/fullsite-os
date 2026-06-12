@@ -6,7 +6,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "parity": "node tools/parity/run.ts"
+    "parity": "node tools/parity/run.ts",
+    "bridge": "node tools/print-bridge/server.ts"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
