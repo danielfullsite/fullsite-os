@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install -g pnpm && pnpm install --frozen-lockfile
+      # Sin install: el comparador solo usa Node 24 (type stripping + fetch nativos)
       - name: Comparar paridad
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
