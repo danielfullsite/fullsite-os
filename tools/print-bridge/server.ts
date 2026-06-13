@@ -21,7 +21,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { execFile } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,8 +36,23 @@ import {
   type PrinterConfig,
 } from './lib.ts';
 
+// Compilado a .exe, import.meta.url apunta al bundle virtual de bun — el
+// printers.json real vive junto al ejecutable. Buscamos en orden:
+// argv[2] → junto al .exe → junto al script → cwd.
 const here = dirname(fileURLToPath(import.meta.url));
-const configPath = process.argv[2] ?? join(here, 'printers.json');
+const candidates = [
+  process.argv[2],
+  join(dirname(process.execPath), 'printers.json'),
+  join(here, 'printers.json'),
+  join(process.cwd(), 'printers.json'),
+].filter((p): p is string => Boolean(p));
+const configPath = candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1];
+
+/** Resuelve un archivo hermano (ej. raw-print.ps1): junto al .exe → junto al script. */
+function sibling(name: string): string {
+  const next = join(dirname(process.execPath), name);
+  return existsSync(next) ? next : join(here, name);
+}
 
 let config: BridgeConfig;
 try {
@@ -77,7 +92,7 @@ function printWindows(printerName: string, bytes: Uint8Array): Promise<void> {
     writeFileSync(file, Buffer.from(bytes));
     execFile(
       'powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(here, 'raw-print.ps1'), '-PrinterName', printerName, '-FilePath', file],
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', sibling('raw-print.ps1'), '-PrinterName', printerName, '-FilePath', file],
       { timeout: 15000 },
       (err, _stdout, stderr) => {
         if (err) reject(new Error(`raw-print.ps1 falló: ${stderr || err.message}`));
