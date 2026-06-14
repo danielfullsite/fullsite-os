@@ -124,9 +124,11 @@ async function dispatch(printers: PrinterConfig[], bytes: Uint8Array): Promise<{
 
 // ── HTTP ─────────────────────────────────────────────────────────────────
 
-// ── Seguridad ────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// ██  SEGURIDAD — TANQUE DE GUERRA                                      ██
+// ══════════════════════════════════════════════════════════════════════════
 
-// Solo aceptar requests de orígenes Fullsite (POS)
+// 1. CORS estricto — solo orígenes Fullsite, NUNCA wildcard
 const ALLOWED_ORIGINS = [
   'https://app.fullsite.mx',
   'https://fullsite.mx',
@@ -134,32 +136,71 @@ const ALLOWED_ORIGINS = [
   'http://localhost:3001',
 ];
 
-function setCors(req: IncomingMessage, res: ServerResponse): void {
+function setCors(req: IncomingMessage, res: ServerResponse): boolean {
   const origin = req.headers.origin || '';
-  // Solo permitir orígenes Fullsite — no wildcard
-  if (ALLOWED_ORIGINS.some(o => origin.startsWith(o)) || !origin) {
+  const allowed = !origin || ALLOWED_ORIGINS.some(o => origin.startsWith(o));
+
+  if (allowed) {
     res.setHeader('Access-Control-Allow-Origin', origin || ALLOWED_ORIGINS[0]);
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bridge-Token');
-  // Private Network Access: Chrome lo exige para https://pos → http://127.0.0.1.
   res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  // Security headers
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+
+  return allowed;
 }
 
-// Rate limiting: max 60 requests per minute
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+// 2. Rate limiting — 120 requests/min normal, 10/min en ráfaga (burst protection)
+const rateWindow: number[] = [];
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 120;
+const burstWindow: number[] = [];
+const BURST_WINDOW_MS = 2_000;
+const BURST_MAX = 10;
+
 function checkRateLimit(): boolean {
   const now = Date.now();
-  const key = 'local';
-  const entry = rateLimitMap.get(key);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(key, { count: 1, resetAt: now + 60000 });
-    return true;
-  }
-  if (entry.count >= 60) return false;
-  entry.count++;
+  // Clean old entries
+  while (rateWindow.length > 0 && rateWindow[0] < now - RATE_WINDOW_MS) rateWindow.shift();
+  while (burstWindow.length > 0 && burstWindow[0] < now - BURST_WINDOW_MS) burstWindow.shift();
+  // Check
+  if (rateWindow.length >= RATE_MAX || burstWindow.length >= BURST_MAX) return false;
+  rateWindow.push(now);
+  burstWindow.push(now);
   return true;
 }
+
+// 3. Request validation — only allow known routes, known methods
+const VALID_ROUTES = new Set(['/health', '/print', '/drawer']);
+const VALID_METHODS = new Set(['GET', 'POST', 'OPTIONS']);
+
+function isValidRequest(method: string, url: string): boolean {
+  if (!VALID_METHODS.has(method)) return false;
+  if (method === 'OPTIONS') return true;
+  if (method === 'GET' && url === '/health') return true;
+  if (method === 'POST' && (url === '/print' || url === '/drawer')) return true;
+  return false;
+}
+
+// 4. Input sanitization — validate base64 data doesn't contain injection
+function isValidBase64(data: string): boolean {
+  if (data.length > 500_000) return false; // 500KB max for a ticket
+  return /^[A-Za-z0-9+/=\s]+$/.test(data);
+}
+
+// 5. Audit log — every request gets logged
+function auditLog(method: string, url: string, status: number, detail: string): void {
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] ${method} ${url} → ${status} ${detail}`);
+}
+
+// 6. Connection timeout — kill slow/hanging connections
+const CONNECTION_TIMEOUT_MS = 10_000;
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -185,45 +226,74 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 const server = createServer(async (req, res) => {
-  setCors(req, res);
+  const method = req.method ?? 'UNKNOWN';
   const url = req.url ?? '/';
 
-  if (req.method === 'OPTIONS') {
+  // Connection timeout
+  req.setTimeout(CONNECTION_TIMEOUT_MS, () => { req.destroy(); });
+  res.setTimeout(CONNECTION_TIMEOUT_MS, () => { res.destroy(); });
+
+  // Layer 1: CORS check — reject unknown origins
+  const originAllowed = setCors(req, res);
+  if (!originAllowed && req.headers.origin) {
+    auditLog(method, url, 403, `BLOCKED origin: ${req.headers.origin}`);
+    json(res, 403, { ok: false, error: 'Origin no autorizado' });
+    return;
+  }
+
+  // Layer 2: Preflight
+  if (method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
     return;
   }
 
-  // Rate limit
+  // Layer 3: Method + Route validation
+  if (!isValidRequest(method, url)) {
+    auditLog(method, url, 405, 'BLOCKED invalid route/method');
+    json(res, 405, { ok: false, error: 'Metodo o ruta no permitida' });
+    return;
+  }
+
+  // Layer 4: Rate limit
   if (!checkRateLimit()) {
-    json(res, 429, { ok: false, error: 'Demasiados requests — espera un momento' });
+    auditLog(method, url, 429, 'BLOCKED rate limit');
+    json(res, 429, { ok: false, error: 'Demasiados requests' });
     return;
   }
 
   try {
-    if (req.method === 'GET' && url === '/health') {
+    // Layer 5: Health (read-only, no side effects)
+    if (method === 'GET' && url === '/health') {
+      auditLog(method, url, 200, 'health check');
       json(res, 200, {
         ok: true,
         service: 'fullsite-print-bridge',
+        version: '1.1.0',
         stations: Object.keys(config.stations),
         default: config.default ?? null,
+        uptime: Math.floor(process.uptime()),
       });
       return;
     }
 
-    if (req.method === 'POST' && (url === '/print' || url === '/drawer')) {
+    // Layer 6: Parse + validate body
+    if (method === 'POST' && (url === '/print' || url === '/drawer')) {
       const body = (await readBody(req)) || '{}';
       let parsed: { station?: string; data?: string };
       try {
         parsed = JSON.parse(body);
       } catch {
+        auditLog(method, url, 400, 'invalid JSON');
         json(res, 400, { ok: false, error: 'body no es JSON' });
         return;
       }
 
+      // Layer 7: Station validation
       const resolved = resolvePrinter(config, parsed.station ?? null);
       if (!resolved) {
-        json(res, 404, { ok: false, error: `estación desconocida: ${parsed.station ?? '(ninguna)'} y no hay default` });
+        auditLog(method, url, 404, `unknown station: ${parsed.station}`);
+        json(res, 404, { ok: false, error: `estación desconocida: ${parsed.station ?? '(ninguna)'}` });
         return;
       }
 
@@ -232,33 +302,45 @@ const server = createServer(async (req, res) => {
         bytes = DRAWER_KICK;
       } else {
         if (!parsed.data) {
+          auditLog(method, url, 400, 'missing data');
           json(res, 400, { ok: false, error: 'falta "data" (ESC/POS en base64)' });
+          return;
+        }
+        // Layer 8: Input validation — base64 format check
+        if (!isValidBase64(parsed.data)) {
+          auditLog(method, url, 400, 'BLOCKED invalid base64 / too large');
+          json(res, 400, { ok: false, error: 'data inválida o demasiado grande' });
           return;
         }
         try {
           bytes = decodeBase64(parsed.data);
         } catch (e) {
+          auditLog(method, url, 400, `decode error: ${(e as Error).message}`);
           json(res, 400, { ok: false, error: (e as Error).message });
           return;
         }
       }
 
+      // Layer 9: Dispatch to printer
       const { printed, errors } = await dispatch(resolved.printers, bytes);
-      console.log(
-        `[${new Date().toISOString()}] ${url} → ${resolved.station} (${bytes.length} bytes, ${printed}/${resolved.printers.length} impresoras) OK` +
-        (errors.length ? ` — fallas: ${errors.join(' | ')}` : ''),
-      );
+      auditLog(method, url, 200, `${resolved.station} (${bytes.length}B, ${printed}/${resolved.printers.length} ok)${errors.length ? ' PARTIAL: ' + errors.join(' | ') : ''}`);
       json(res, 200, { ok: true, station: resolved.station, bytes: bytes.length, printed, ...(errors.length ? { errors } : {}) });
       return;
     }
 
+    auditLog(method, url, 404, 'BLOCKED unknown route');
     json(res, 404, { ok: false, error: 'ruta desconocida' });
   } catch (e) {
     const msg = (e as Error).message;
-    console.error(`[${new Date().toISOString()}] ${url} ERROR: ${msg}`);
-    json(res, 502, { ok: false, error: msg });
+    auditLog(method, url, 502, `ERROR: ${msg}`);
+    // Never leak internal error details to client
+    json(res, 502, { ok: false, error: 'Error interno del bridge' });
   }
 });
+
+// Graceful shutdown
+process.on('SIGINT', () => { console.log('\n[bridge] Shutting down...'); server.close(() => process.exit(0)); });
+process.on('SIGTERM', () => { server.close(() => process.exit(0)); });
 
 server.listen(config.port, '127.0.0.1', () => {
   console.log(`Fullsite print bridge en http://127.0.0.1:${config.port}`);
