@@ -124,13 +124,41 @@ async function dispatch(printers: PrinterConfig[], bytes: Uint8Array): Promise<{
 
 // ── HTTP ─────────────────────────────────────────────────────────────────
 
-function setCors(res: ServerResponse): void {
-  // El bridge solo escucha en 127.0.0.1; CORS abierto es seguro aquí.
-  res.setHeader('Access-Control-Allow-Origin', '*');
+// ── Seguridad ────────────────────────────────────────────────────────────
+
+// Solo aceptar requests de orígenes Fullsite (POS)
+const ALLOWED_ORIGINS = [
+  'https://app.fullsite.mx',
+  'https://fullsite.mx',
+  'http://localhost:3000',
+  'http://localhost:3001',
+];
+
+function setCors(req: IncomingMessage, res: ServerResponse): void {
+  const origin = req.headers.origin || '';
+  // Solo permitir orígenes Fullsite — no wildcard
+  if (ALLOWED_ORIGINS.some(o => origin.startsWith(o)) || !origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin || ALLOWED_ORIGINS[0]);
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bridge-Token');
   // Private Network Access: Chrome lo exige para https://pos → http://127.0.0.1.
   res.setHeader('Access-Control-Allow-Private-Network', 'true');
+}
+
+// Rate limiting: max 60 requests per minute
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+function checkRateLimit(): boolean {
+  const now = Date.now();
+  const key = 'local';
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + 60000 });
+    return true;
+  }
+  if (entry.count >= 60) return false;
+  entry.count++;
+  return true;
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -144,7 +172,7 @@ function readBody(req: IncomingMessage): Promise<string> {
     let size = 0;
     req.on('data', (c: Buffer) => {
       size += c.length;
-      if (size > 5 * 1024 * 1024) {
+      if (size > 1 * 1024 * 1024) { // 1MB max — tickets son pequeños
         reject(new Error('payload demasiado grande'));
         req.destroy();
         return;
@@ -157,12 +185,18 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 const server = createServer(async (req, res) => {
-  setCors(res);
+  setCors(req, res);
   const url = req.url ?? '/';
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // Rate limit
+  if (!checkRateLimit()) {
+    json(res, 429, { ok: false, error: 'Demasiados requests — espera un momento' });
     return;
   }
 
