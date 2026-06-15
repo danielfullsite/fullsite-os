@@ -198,9 +198,41 @@ function isValidBase64(data) {
   return /^[A-Za-z0-9+/=\s]+$/.test(data);
 }
 
+// Cloud log buffer — sends logs to Supabase every 60s (best-effort)
+const _logBuffer = [];
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
+
 function auditLog(method, url, status, detail) {
-  console.log(`[${new Date().toISOString()}] ${method} ${url} -> ${status} ${detail}`);
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] ${method} ${url} -> ${status} ${detail}`);
+  _logBuffer.push({ ts, method, url, status, detail });
+  if (_logBuffer.length > 100) _logBuffer.shift(); // cap buffer
 }
+
+// Flush logs to Supabase (if configured)
+async function flushLogs() {
+  if (!SUPABASE_URL || !SUPABASE_KEY || _logBuffer.length === 0) return;
+  const batch = _logBuffer.splice(0, _logBuffer.length);
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/pos_bridge_logs`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json', Prefer: 'return=minimal',
+      },
+      body: JSON.stringify(batch.map(l => ({
+        client_id: 'amalay',
+        method: l.method,
+        url: l.url,
+        status: l.status,
+        detail: l.detail,
+        logged_at: l.ts,
+      }))),
+    });
+  } catch { /* offline or table doesn't exist — silent */ }
+}
+setInterval(flushLogs, 60000); // every 60s
 
 // ── HTTP Server ─────────────────────────────────────────────────────────
 
