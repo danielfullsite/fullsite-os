@@ -322,6 +322,20 @@ const server = http.createServer(async (req, res) => {
 process.on('SIGINT', () => { console.log('\n[bridge] Shutting down...'); server.close(() => process.exit(0)); });
 process.on('SIGTERM', () => { server.close(() => process.exit(0)); });
 
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log('');
+    console.log('  El bridge ya esta corriendo en el puerto ' + config.port + '.');
+    console.log('  No es necesario abrir otra instancia.');
+    console.log('');
+    console.log('  Esta ventana se cerrara en 5 segundos...');
+    setTimeout(() => process.exit(0), 5000);
+  } else {
+    console.error('  Error fatal:', err.message);
+    process.exit(1);
+  }
+});
+
 server.listen(config.port, '127.0.0.1', () => {
   console.log('');
   console.log('  ╔══════════════════════════════════════════╗');
