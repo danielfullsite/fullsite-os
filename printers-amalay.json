@@ -1,0 +1,13 @@
+{
+  "port": 7717,
+  "stations": {
+    "cocina": [
+      { "type": "tcp", "host": "192.168.1.21", "port": 9100 },
+      { "type": "tcp", "host": "192.168.1.40", "port": 9100 }
+    ],
+    "barra": { "type": "tcp", "host": "192.168.1.30", "port": 9100 },
+    "caja": { "type": "windows", "printer": "PANADERIA" },
+    "tickets": { "type": "windows", "printer": "EC TICKET" }
+  },
+  "default": "tickets"
+}
